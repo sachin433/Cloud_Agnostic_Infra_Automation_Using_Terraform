@@ -1,0 +1,72 @@
+pipeline{
+  agent { label 'Infra_node' }
+  parameters {
+          booleanParam defaultValue: true, description: '''If agent doesnt have internet,ensure the terraform providers plugins are already present on agent.
+check for without internet
+uncheck for with internet''', name: 'Is_Agent_Without_Internet'
+        choice(name: 'Environment_Type', choices: ['Dev', 'QA', 'Prod'], description: 'Choose Enviroment')
+        choice choices: ['vm', 'openshift'], description: 'Choose Platform', name: 'Platform'
+        string defaultValue: '', description: '''EX: Openshift-Fresh
+        VM-Fresh
+        Perf-Reg
+        Jenkins-Customized-Openshift''', name: 'Project_Name', trim: false
+         credentials credentialType: 'org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl', defaultValue: 'buildmanagers-password', description: '', name: 'GITLAB_PASSWORD', required: false
+        
+    }
+  environment {
+    PATH = "${PATH}:${getTerraformPath()}"
+    AWS_ACCESS_KEY_ID     = "${AWS_ACCESS_KEY_ID}"
+    AWS_SECRET_ACCESS_KEY = "${AWS_SECRET_ACCESS_KEY}"
+    AWS_DEFAULT_REGION = 'us-west-2'
+    NUTANIX_PASSWORD= credentials('my-password')
+    GITLAB_PASSWORD= credentials('buildmanager-password')
+  }
+  stages{
+  
+    stage('terraform plan'){
+      steps{
+    
+      sh returnStatus: true, script: """cd Terraform_Scripts/${params.Environment_Type}
+                                           terraform workspace new ${params.Project_Name}
+                                    """
+      sh """if ${Is_Agent_Without_Internet}
+            then
+               cp -r ../../../Terraform_Plugin/plugins Terraform_Scripts/${params.Environment_Type}/.terraform
+            fi
+            cd Terraform_Scripts/${params.Environment_Type}
+            terraform init
+            terraform workspace select ${params.Project_Name}
+            terraform plan -var-file="${params.Platform}.tfvars"
+            #terraform apply -auto-approve -var-file="${params.Platform}.tfvars"
+        """
+      }
+    }
+    
+    stage('terraform apply'){
+        steps{
+
+          input 'Verfiy the Infra Plan in Console Output .Shall we Proceed?'
+          sh """cd Terraform_Scripts/${params.Environment_Type}
+                terraform workspace select ${params.Project_Name}
+                terraform apply -auto-approve -var-file="${params.Platform}.tfvars"
+ 
+        """
+        sh """rm -rf mobiquity_ansible_configurations
+              git clone http://<USERNAME>:${GITLAB_PASSWORD}@example.git
+              cd example
+              git checkout -b terraform1
+              cd .. && cp -r `ls | grep -v "example"` example
+              cd example
+              echo `git add -A && git commit -m "#MON-000|builduser|Updated terraform state file|FIX"`
+              git push origin terraform1
+        """
+
+     }
+    }
+  }
+}
+
+def getTerraformPath(){
+  def tfHome = tool name: 'Terraform-13.5', type: 'org.jenkinsci.plugins.terraform.TerraformInstallation'
+  return tfHome
+}
